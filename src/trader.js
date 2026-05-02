@@ -17,6 +17,7 @@ const {
 const bs58   = require('bs58');
 const fetch  = require('node-fetch');
 const logger = require('./logger');
+const birdeye = require('./birdeye');
 
 // ── 配置 ────────────────────────────────────────────────────────
 
@@ -26,6 +27,14 @@ const SLIPPAGE_BPS     = parseInt(process.env.SLIPPAGE_BPS     || '500');
 const TRADE_SOL        = parseFloat(process.env.TRADE_SIZE_SOL || '1');
 const SLIPPAGE_MAX_BPS = parseInt(process.env.SLIPPAGE_MAX_BPS || '2000');
 const MAX_RETRY        = parseInt(process.env.TRADE_MAX_RETRY  || '3');  // 止损时重试少一些
+
+// ★ V5-39: 买入前价格偏离校验
+//   场景: monk 案例 — 决策时刻 RSI=5.23 价格 $0.000231 触发 BUY,
+//        但 V 反在几秒内将价格拉到 $0.000303 (+30%), 实际成交在高位
+//   修法: 下单前再拉一次 Birdeye 实时价, 与决策时的 expectedPriceUsd 对比,
+//         偏离超过 MAX_PRICE_DEVIATION_PCT 就直接拒绝下单 (不重试, 不放大滑点)
+//   默认 8%: 容忍正常波动, 拒绝 V 反追高
+const MAX_PRICE_DEVIATION_PCT = parseFloat(process.env.MAX_PRICE_DEVIATION_PCT || '8');
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY || '';
 const HELIUS_RPC_URL = process.env.HELIUS_RPC_URL || '';
@@ -206,6 +215,14 @@ function signTx(base64Tx) {
 
 // ── 重试执行 ────────────────────────────────────────────────────
 
+// ★ V5-39: 价格偏离错误 — 由 buy 在下单前抛出, executeWithRetry 不重试它
+class PriceDeviationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'PriceDeviationError';
+  }
+}
+
 async function executeWithRetry(orderFn, isStopLoss = false) {
   let slippage = SLIPPAGE_BPS;
   const maxRetry = isStopLoss ? Math.min(MAX_RETRY, 2) : MAX_RETRY;  // 止损少重试
@@ -249,10 +266,37 @@ async function executeWithRetry(orderFn, isStopLoss = false) {
 
 // ── 买入 ────────────────────────────────────────────────────────
 
-async function buy(tokenAddress, symbol) {
+async function buy(tokenAddress, symbol, expectedPriceUsd) {
   const solLamports = Math.floor(TRADE_SOL * LAMPORTS_PER_SOL);
-  logger.info('[Trader] 🟢 BUY %s  solLamports=%d  slippage=%dbps(%.1f%%)',
-    symbol, solLamports, SLIPPAGE_BPS, SLIPPAGE_BPS / 100);
+  logger.info('[Trader] 🟢 BUY %s  solLamports=%d  slippage=%dbps(%.1f%%)  expectedPrice=%s',
+    symbol, solLamports, SLIPPAGE_BPS, SLIPPAGE_BPS / 100,
+    expectedPriceUsd ? expectedPriceUsd.toPrecision(6) : 'null');
+
+  // ★ V5-39: 下单前价格偏离校验 — 防 monk 类 V 反追高
+  //   只在 expectedPriceUsd 提供时校验, 兼容老调用
+  if (expectedPriceUsd && expectedPriceUsd > 0) {
+    try {
+      const currentPrice = await birdeye.getPriceForce(tokenAddress);
+      if (currentPrice && currentPrice > 0) {
+        const deviationPct = ((currentPrice - expectedPriceUsd) / expectedPriceUsd) * 100;
+        if (Math.abs(deviationPct) > MAX_PRICE_DEVIATION_PCT) {
+          logger.warn('[Trader] ❌ %s 价格偏离过大: 决策价=%s, 当前价=%s, 偏离=%+.2f%% > %g%% — 取消下单',
+            symbol, expectedPriceUsd.toPrecision(6), currentPrice.toPrecision(6),
+            deviationPct, MAX_PRICE_DEVIATION_PCT);
+          throw new PriceDeviationError(
+            `PRICE_DEVIATION(expected=${expectedPriceUsd.toPrecision(6)},current=${currentPrice.toPrecision(6)},dev=${deviationPct.toFixed(2)}%)`);
+        }
+        logger.info('[Trader] ✓ %s 价格校验通过: 偏离=%+.2f%% (≤%g%%)',
+          symbol, deviationPct, MAX_PRICE_DEVIATION_PCT);
+      } else {
+        // 拉不到当前价就降级允许下单 (避免 birdeye 故障导致全停)
+        logger.warn('[Trader] ⚠️ %s 拉不到当前价, 跳过价格校验 — 仍下单', symbol);
+      }
+    } catch (err) {
+      if (err instanceof PriceDeviationError) throw err;  // 校验失败要往上抛
+      logger.warn('[Trader] %s 价格校验异常 (非偏离), 仍下单: %s', symbol, err.message);
+    }
+  }
 
   const result = await executeWithRetry((slipBps) =>
     getSwapOrder({
@@ -308,4 +352,4 @@ async function sell(tokenAddress, symbol, position, isStopLoss = false) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-module.exports = { buy, sell, getPriorityFee, getRpcUrl };
+module.exports = { buy, sell, getPriorityFee, getRpcUrl, PriceDeviationError };

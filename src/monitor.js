@@ -1206,7 +1206,7 @@ class TokenMonitor extends EventEmitter {
         tradeNum, state.symbol, price, TRADE_SOL);
     } else {
       try {
-        const result = await trader.buy(state.address, state.symbol);
+        const result = await trader.buy(state.address, state.symbol, price);
 
         // ★ 买单成交后，等 500ms 再查一次实际成交价
         //   避免用"信号触发时价格"做止损基准（memecoin 滑点可能很大）
@@ -1242,7 +1242,14 @@ class TokenMonitor extends EventEmitter {
         logger.info('[Monitor] ✅ BUY #%d %s  solIn=%.4f SOL  entryPrice=%.6f  txid=%s',
           tradeNum, state.symbol, result.solIn, actualEntryPrice, result.txid);
       } catch (err) {
-        logger.error('[Monitor] ❌ BUY #%d %s 失败: %s', tradeNum, state.symbol, err.message);
+        if (err && err.name === 'PriceDeviationError') {
+          // ★ V5-39: 价格偏离过大被拒, 进 30s 冷却避免反复触发
+          logger.warn('[Monitor] ⏸ %s 因价格偏离取消下单, 进入 30s 冷却: %s',
+            state.symbol, err.message);
+          state._sellCooldownUntil = Date.now() + 30000;
+        } else {
+          logger.error('[Monitor] ❌ BUY #%d %s 失败: %s', tradeNum, state.symbol, err.message);
+        }
         state.inPosition = false;
       }
     }

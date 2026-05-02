@@ -207,6 +207,10 @@ server.listen(PORT, () => {
       parseInt(process.env.PRICE_FRESH_MS_FOR_SIGNAL || '30000', 10));
   }
 
+  // ★ V5-39: 价格偏离校验 (买入前)
+  logger.info('   买入前价格校验: MAX_PRICE_DEVIATION_PCT=%s%% (偏离过大拒绝下单, 拒绝后 30s 冷却)',
+    process.env.MAX_PRICE_DEVIATION_PCT || '8');
+
   // 连接信息
   const birdeyeKey = process.env.BIRDEYE_API_KEY || '';
   logger.info('   Birdeye: %s (B-05 WS 实时价格)',

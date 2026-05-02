@@ -316,6 +316,7 @@ curl http://localhost:3001/diag | jq .
 - **V5-36**: ★ 修"用过期数据误买"根因 (lolcat 案例: lastCandleAge=307s, _lastPriceUsd=lastClose, RSI=7.93 误触发买入). 三处修复 — (1) rsi.js 加 MAX_STALE_CANDLE_SEC 门槛 (默认 90s), closedCandles 最新一根太旧时拒绝 BUY (SELL 仍工作); (2) monitor.js 删 V5-17 污染逻辑 (`last.close = state._lastPriceUsd` 会污染 RSI 历史序列); (3) monitor.js 加 PRICE_FRESH_MS_FOR_SIGNAL (默认 30s), _lastPriceUsd 过期就不构造 currentCandle, 让上游 fallback 到经过过期检查的 price 变量
 - **V5-37**: ★ 鲁棒化 — V5-36 上线后用户服务器 .env 仍是 V5-25 时代 OHLCV_REFRESH_SEC=300, lastCandleAge=331s 全表被 90s 门槛拒. 修法: MAX_STALE_CANDLE_SEC 改为自适应公式 max(KLINE_SEC + OHLCV_REFRESH_SEC + 30, 90), 不显式设置时跟随其他参数走. 启动日志打印实际生效门槛, 便于诊断
 - **V5-38**: ★ ELO 案例 (低流动性币 + 大单) — lastCandleAge=360s 没被 V5-37 的 390s 门槛挡住, 实际成交在 +48% 高点. 两处修复 — (B) monitor.js 链上 tick 兜底 _lastPriceUsd: 链上交易来时如果 _lastPriceAge > 30s, 异步调 birdeye.getPriceForce 绕过 WS 缓存拉新价 (节流: 单币 30s 最多一次, 不刷爆 CU); birdeye.js 新增 getPriceForce 函数. (C) rsi.js MAX_STALE_CANDLE_SEC 公式从 KLINE+OHLCV_REFRESH+30 收紧到 2×KLINE+30, 不再依赖 OHLCV_REFRESH_SEC, 1min K 线下默认 150s
+- **V5-39**: ★ monk 案例 (V 反追高) — 决策时刻 RSI=5.23 价格 $0.000231 触发 BUY, 但 V 反在几秒内将价格拉到 $0.000303 (+30%), 实际成交在高位. V5-38 数据新鲜度防线没问题 (lastCandleAge=119s 健康), 真正问题是"信号触发→链上成交"几秒延迟内价格已经飞了. 修法: 交易层下单前用 birdeye.getPriceForce 拉一次实时价, 与决策时的 expectedPriceUsd 对比, 偏离 > MAX_PRICE_DEVIATION_PCT (默认 8%) 就拒绝下单, 进 30s 冷却避免反复触发. trader.buy 加第三参数 expectedPriceUsd, 抛 PriceDeviationError; monitor 调用方传 price 并区分错误类型. 拉不到价格降级允许下单防 birdeye 故障全停
 
 ---
 
