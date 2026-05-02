@@ -460,6 +460,65 @@ function getCachedFdv(address) {
   return cached.fdv ?? null;
 }
 
+// ★ V5-38: 跳过 WS 缓存的强制价格拉取
+//   背景: 低流动性币 BirdeyeWS 长时间不推送, getCachedPrice 90s 内仍返回旧价
+//        Helius 链上交易触发紧急刷新时, 必须绕过 WS 缓存才能拿到新价
+//   行为: 跳过 WS 缓存, 但保留 HTTP 缓存(60s) 避免短时间内多次大单都打 HTTP
+//   这个函数不需要再做失败抑制, 失败时返回 null, 调用方判断
+async function getPriceForce(address) {
+  _getPriceStats.totalCalls++;
+  // 跳过 WS 缓存, 直接走 HTTP 缓存路径
+  const httpCached = _priceHttpCache.get(address);
+  if (httpCached && Date.now() - httpCached.ts < PRICE_HTTP_CACHE_MS) {
+    _getPriceStats.hitHttpCache++;
+    return httpCached.price;
+  }
+  // 失败抑制仍然生效, 不做无谓的 HTTP
+  const failed = _priceFailCache.get(address);
+  if (failed && Date.now() - failed.ts < failed.ttl) {
+    _getPriceStats.hitFailCache++;
+    return null;
+  }
+  // 真实 HTTP
+  _getPriceStats.realHttpCall++;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const url = `${BASE}/defi/price?address=${address}`;
+    const res = await fetch(url, {
+      headers: { 'X-API-KEY': BIRDEYE_KEY, 'x-chain': 'solana' },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      _recordFailure(address, res.status);
+      _getPriceStats.realHttpFail++;
+      return null;
+    }
+    const json = await res.json();
+    if (!json.success || !json.data) {
+      _recordFailure(address, 'NO_DATA');
+      _getPriceStats.realHttpFail++;
+      return null;
+    }
+    const price = json.data.value;
+    if (!Number.isFinite(price) || price <= 0) {
+      _recordFailure(address, 200);
+      _getPriceStats.realHttpFail++;
+      return null;
+    }
+    _priceHttpCache.set(address, { price, ts: Date.now() });
+    _getPriceStats.realHttpSuccess++;
+    if (_priceFailCache.has(address)) _priceFailCache.delete(address);
+    return price;
+  } catch (err) {
+    _recordFailure(address, err.name === 'AbortError' ? 'TIMEOUT' : 'NET_ERR');
+    _getPriceStats.realHttpFail++;
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /** 强制绕过缓存，发 HTTP 请求获取最新 FDV。仅在买入前调用一次。*/
 async function getFdvFresh(address) {
   _overviewCache.delete(address);          // 清除旧缓存，强制重新拉取
@@ -731,4 +790,4 @@ async function getOHLCV(address, intervalSec, bars = 150) {
   }
 }
 
-module.exports = { getPrice, getPriceFailStatus, getPriceStats, getFdv, getCachedFdv, getFdvFresh, getLiquidity, getV24hUSD, getOverview, getSymbol, getRecentOHLCV, getOhlcvCacheStats, getCreationInfo, clearCache, priceStream, getOHLCV };
+module.exports = { getPrice, getPriceForce, getPriceFailStatus, getPriceStats, getFdv, getCachedFdv, getFdvFresh, getLiquidity, getV24hUSD, getOverview, getSymbol, getRecentOHLCV, getOhlcvCacheStats, getCreationInfo, clearCache, priceStream, getOHLCV };

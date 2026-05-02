@@ -710,6 +710,33 @@ class TokenMonitor extends EventEmitter {
       owner:     trade.owner,
     });
 
+    // ★ V5-38: 链上 tick 兜底 _lastPriceUsd 刷新
+    //   场景: 低流动性币 BirdeyeWS 长时间不推送 (_lastPriceAge 数十秒到几分钟)
+    //         链上突然来一个 3-5 SOL 大单, 价格瞬间跳升 50%+
+    //         策略仍用旧的 _lastPriceUsd 决策 → 信号触发后实际成交在新高位
+    //   修法: 链上 tick 来时, 如果 _lastPriceUsd 已经太旧, 主动绕过 WS 缓存拉一次 HTTP 价格
+    //   节流: 每个币每 30s 最多触发一次 (单币高频大单时不刷爆 CU)
+    //         birdeye.getPriceForce 内部还有 60s HTTP 缓存兜底
+    const lastPriceAge = state._lastPriceTs ? (now - state._lastPriceTs) : Infinity;
+    const lastChainRefreshAge = state._lastChainRefreshTs ? (now - state._lastChainRefreshTs) : Infinity;
+    if (lastPriceAge > 30000 && lastChainRefreshAge > 30000) {
+      state._lastChainRefreshTs = now;  // 抢占节流锁, 防并发重复刷
+      // 异步刷新, 不阻塞 trade 处理本身
+      birdeye.getPriceForce(address).then(freshPrice => {
+        if (freshPrice && freshPrice > 0) {
+          const s = this._tokens.get(address);
+          if (s) {
+            s._lastPriceUsd = freshPrice;
+            s._lastPriceTs  = Date.now();
+            logger.debug('[Monitor] %s 链上tick触发价格刷新 → $%s (旧值%ss老)',
+              s.symbol, freshPrice, Math.round(lastPriceAge / 1000));
+          }
+        }
+      }).catch(err => {
+        logger.debug('[Monitor] %s 链上tick刷价失败: %s', state.symbol, err.message);
+      });
+    }
+
     // ★ 链上交易也触发止损检查（用链上价格 × SOL/USD 估算）
     // 链上交易比 Birdeye WS 更快到达，不浪费这个信号
     if (state.inPosition && !state._selling && !this._stopLossLocks.has(address)) {
