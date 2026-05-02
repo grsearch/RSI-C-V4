@@ -1,0 +1,23 @@
+{
+  "name": "sol-rsi-monitor-v3",
+  "version": "3.0.0",
+  "description": "Solana RSI(7)+量能 策略监控 — BirdeyeWS实时价格 · HeliusWS/LaserStream链上数据 · 快速止损<500ms",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "backtest": "node src/backtest.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.3",
+    "bs58": "^5.0.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0",
+    "winston": "^3.13.0",
+    "ws": "^8.17.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
