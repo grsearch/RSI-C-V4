@@ -70,12 +70,22 @@ const MIN_CANDLES_FOR_SIGNAL = parseInt(
   10
 );
 
-// ★ V5-36: closedCandles 最新一根超过此时长（秒）就不出 BUY 信号
+// ★ V5-36/V5-37: closedCandles 最新一根超过此时长（秒）就不出 BUY 信号
 //   背景: Birdeye OHLCV 缓存 + 低流动性币 BirdeyeWS 长时间不推送
 //   现象: lastCandleAge=307s, 用 5 分钟前的数据触发了"RSI=7.93 超卖买入"
 //   防御: 数据过期就拒绝出 BUY (SELL 仍然让止损/PANIC 工作, 防止已持仓代币卡死)
-//   默认 90s = 1.5 倍 K 线宽度, 容忍偶尔延迟但不容忍长时间卡死
-const MAX_STALE_CANDLE_SEC = parseInt(process.env.MAX_STALE_CANDLE_SEC || '90', 10);
+//
+//   V5-37: 自适应默认值 — 如果 .env 没显式设 MAX_STALE_CANDLE_SEC, 跟随 OHLCV_REFRESH_SEC
+//          公式: max(KLINE_SEC + OHLCV_REFRESH_SEC + 30, 90)
+//          含义: K 线宽度(等一根新K线)+ OHLCV 缓存周期(等下一次刷新) + 30s 网络/服务端余量, 不低于 90s
+//          示例: 1min K 线 + 30s 缓存 → 60+30+30 = 120s
+//                1min K 线 + 300s 缓存 → 60+300+30 = 390s (避免全表 STALE_CANDLE)
+//                5min K 线 + 300s 缓存 → 300+300+30 = 630s
+//          这样即使用户 .env 漂移没同步, 门槛也跟着配置走, 不会硬生生挡住所有信号
+const _OHLCV_REFRESH_SEC_FOR_GUARD = parseInt(process.env.OHLCV_REFRESH_SEC || '300', 10);
+const MAX_STALE_CANDLE_SEC = process.env.MAX_STALE_CANDLE_SEC
+  ? parseInt(process.env.MAX_STALE_CANDLE_SEC, 10)
+  : Math.max(KLINE_SEC + _OHLCV_REFRESH_SEC_FOR_GUARD + 30, 90);
 
 function calcEMA(closes, period) {
   if (closes.length < period) return NaN;

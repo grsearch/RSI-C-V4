@@ -195,6 +195,18 @@ server.listen(PORT, () => {
     process.env.EMA_SLOPE_ENABLED     || 'true',
     process.env.EMA_SLOPE_LOOKBACK    || '5',
     process.env.EMA_SLOPE_MIN_PCT     || '0');
+  // ★ V5-37: 数据新鲜度门槛 (实际生效值, 自适应公式)
+  {
+    const klineSec = parseInt(process.env.KLINE_INTERVAL_SEC || '300', 10);
+    const refreshSec = parseInt(process.env.OHLCV_REFRESH_SEC || '300', 10);
+    const computedDefault = Math.max(klineSec + refreshSec + 30, 90);
+    const explicit = process.env.MAX_STALE_CANDLE_SEC;
+    const actualMaxStale = explicit ? parseInt(explicit, 10) : computedDefault;
+    logger.info('   数据新鲜度门槛: MAX_STALE_CANDLE_SEC=%ds %s | PRICE_FRESH_MS_FOR_SIGNAL=%dms',
+      actualMaxStale,
+      explicit ? '(env 显式设置)' : `(自适应: KLINE_SEC=${klineSec}+OHLCV_REFRESH_SEC=${refreshSec}+30)`,
+      parseInt(process.env.PRICE_FRESH_MS_FOR_SIGNAL || '30000', 10));
+  }
 
   // 连接信息
   const birdeyeKey = process.env.BIRDEYE_API_KEY || '';

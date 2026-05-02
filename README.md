@@ -314,6 +314,7 @@ curl http://localhost:3001/diag | jq .
 - **V5-34**: dashboard 实时行情排序规则 — 按 X mentions 数从大到小为主, 同值内按状态序(持仓>冷却>观望). 替换原"按 24h 交易笔数从大到小"的规则
 - **V5-35**: 诊断 — 买入瞬间打详细日志 (BUY_DIAG)，包含 closedCount / lastCandleAge / lastClose / realtimePrice / lastClosedRsi / rsiRealtime / avgGain / avgLoss / _lastPriceUsd / _lastPriceAge / recentCloses[10]，用于排查"日志报 RSI=22 但 GMGN 图表 RSI 是 60+"这类买入点位异常问题
 - **V5-36**: ★ 修"用过期数据误买"根因 (lolcat 案例: lastCandleAge=307s, _lastPriceUsd=lastClose, RSI=7.93 误触发买入). 三处修复 — (1) rsi.js 加 MAX_STALE_CANDLE_SEC 门槛 (默认 90s), closedCandles 最新一根太旧时拒绝 BUY (SELL 仍工作); (2) monitor.js 删 V5-17 污染逻辑 (`last.close = state._lastPriceUsd` 会污染 RSI 历史序列); (3) monitor.js 加 PRICE_FRESH_MS_FOR_SIGNAL (默认 30s), _lastPriceUsd 过期就不构造 currentCandle, 让上游 fallback 到经过过期检查的 price 变量
+- **V5-37**: ★ 鲁棒化 — V5-36 上线后用户服务器 .env 仍是 V5-25 时代 OHLCV_REFRESH_SEC=300, lastCandleAge=331s 全表被 90s 门槛拒. 修法: MAX_STALE_CANDLE_SEC 改为自适应公式 max(KLINE_SEC + OHLCV_REFRESH_SEC + 30, 90), 不显式设置时跟随其他参数走. 启动日志打印实际生效门槛, 便于诊断
 
 ---
 
