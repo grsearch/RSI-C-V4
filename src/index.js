@@ -195,6 +195,10 @@ server.listen(PORT, () => {
     process.env.EMA_SLOPE_ENABLED     || 'true',
     process.env.EMA_SLOPE_LOOKBACK    || '5',
     process.env.EMA_SLOPE_MIN_PCT     || '0');
+  // ★ V5-40: EMA99 斜率退出
+  logger.info('   EMA99斜率退出: enabled=%s exit_pct=%s%% (持仓中斜率<阈值立即卖出)',
+    process.env.EMA_SLOPE_EXIT_ENABLED || 'true',
+    process.env.EMA_SLOPE_EXIT_PCT     || '-2');
   // ★ V5-37/V5-38: 数据新鲜度门槛 (实际生效值, 自适应公式 2 × KLINE_SEC + 30)
   {
     const klineSec = parseInt(process.env.KLINE_INTERVAL_SEC || '300', 10);

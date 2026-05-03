@@ -280,14 +280,16 @@ async function buy(tokenAddress, symbol, expectedPriceUsd) {
       if (currentPrice && currentPrice > 0) {
         const deviationPct = ((currentPrice - expectedPriceUsd) / expectedPriceUsd) * 100;
         if (Math.abs(deviationPct) > MAX_PRICE_DEVIATION_PCT) {
-          logger.warn('[Trader] ❌ %s 价格偏离过大: 决策价=%s, 当前价=%s, 偏离=%+.2f%% > %g%% — 取消下单',
-            symbol, expectedPriceUsd.toPrecision(6), currentPrice.toPrecision(6),
-            deviationPct, MAX_PRICE_DEVIATION_PCT);
+          const sign = deviationPct >= 0 ? '+' : '';
+          logger.warn(
+            `[Trader] ❌ ${symbol} 价格偏离过大: 决策价=${expectedPriceUsd.toPrecision(6)}, ` +
+            `当前价=${currentPrice.toPrecision(6)}, 偏离=${sign}${deviationPct.toFixed(2)}% > ${MAX_PRICE_DEVIATION_PCT}% — 取消下单`);
           throw new PriceDeviationError(
             `PRICE_DEVIATION(expected=${expectedPriceUsd.toPrecision(6)},current=${currentPrice.toPrecision(6)},dev=${deviationPct.toFixed(2)}%)`);
         }
-        logger.info('[Trader] ✓ %s 价格校验通过: 偏离=%+.2f%% (≤%g%%)',
-          symbol, deviationPct, MAX_PRICE_DEVIATION_PCT);
+        const sign2 = deviationPct >= 0 ? '+' : '';
+        logger.info(
+          `[Trader] ✓ ${symbol} 价格校验通过: 偏离=${sign2}${deviationPct.toFixed(2)}% (≤${MAX_PRICE_DEVIATION_PCT}%)`);
       } else {
         // 拉不到当前价就降级允许下单 (避免 birdeye 故障导致全停)
         logger.warn('[Trader] ⚠️ %s 拉不到当前价, 跳过价格校验 — 仍下单', symbol);

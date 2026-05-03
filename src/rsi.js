@@ -61,6 +61,12 @@ const EMA_INSUFFICIENT_MODE = (process.env.EMA_INSUFFICIENT_MODE || 'strict').to
 const EMA_SLOPE_ENABLED  = (process.env.EMA_SLOPE_ENABLED || 'true') === 'true';
 const EMA_SLOPE_LOOKBACK = parseInt(process.env.EMA_SLOPE_LOOKBACK || '5', 10);
 const EMA_SLOPE_MIN_PCT  = parseFloat(process.env.EMA_SLOPE_MIN_PCT || '0'); // 0 = 要求持平或上升
+// ★ V5-40: EMA99 斜率退出 — 持仓中 EMA99 斜率跌破 EMA_SLOPE_EXIT_PCT 立即卖出
+//   场景: EMA99 加速下行说明趋势转坏, 抢在硬止损 -50% 之前出场
+//   LOOKBACK 复用 EMA_SLOPE_LOOKBACK (买入侧同一个窗口)
+//   阈值: -2% (比买入侧 -1% 更宽, 给持仓些容忍空间, 避免震荡频繁出场)
+const EMA_SLOPE_EXIT_ENABLED = (process.env.EMA_SLOPE_EXIT_ENABLED || 'true') === 'true';
+const EMA_SLOPE_EXIT_PCT     = parseFloat(process.env.EMA_SLOPE_EXIT_PCT || '-2');
 
 // ★ 产生买卖信号所需的最小已收盘K线数（低于此数量完全不产生信号，避免 RSI 不收敛误判）
 //   默认 max(SKIP_FIRST_CANDLES, RSI_PERIOD × 3) ≈ 21，这是 Wilder RSI 收敛所需
@@ -382,6 +388,19 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
         updateState();
         return { rsi: lastClosedRsi, prevRsi, signal: 'SELL',
                  reason: `RSI_PANIC(${lastClosedRsi.toFixed(1)}>${RSI_PANIC})`, volume: volumeInfo };
+      }
+    }
+
+    // 1.5. ★ V5-40: EMA99 斜率退出 — 趋势加速下行立即出场
+    //   只在 K 线数足够算 EMA99 + 斜率时触发, 避免新币数据不足时的伪信号
+    //   斜率函数返回 null 时 (lookback 不够), 不触发
+    if (EMA_SLOPE_EXIT_ENABLED && !belowConvergence) {
+      const slopeExit = calcEMASlope(closes, EMA_PERIOD, EMA_SLOPE_LOOKBACK);
+      if (slopeExit && slopeExit.slopePct < EMA_SLOPE_EXIT_PCT) {
+        updateState();
+        return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
+                 reason: `EMA99_SLOPE_EXIT(slope=${slopeExit.slopePct.toFixed(3)}%<${EMA_SLOPE_EXIT_PCT}%,lb=${EMA_SLOPE_LOOKBACK})`,
+                 volume: volumeInfo };
       }
     }
 
