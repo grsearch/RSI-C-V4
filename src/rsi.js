@@ -64,9 +64,9 @@ const EMA_SLOPE_MIN_PCT  = parseFloat(process.env.EMA_SLOPE_MIN_PCT || '0'); // 
 // ★ V5-40: EMA99 斜率退出 — 持仓中 EMA99 斜率跌破 EMA_SLOPE_EXIT_PCT 立即卖出
 //   场景: EMA99 加速下行说明趋势转坏, 抢在硬止损 -50% 之前出场
 //   LOOKBACK 复用 EMA_SLOPE_LOOKBACK (买入侧同一个窗口)
-//   阈值: -2% (比买入侧 -1% 更宽, 给持仓些容忍空间, 避免震荡频繁出场)
+//   阈值: V5-42 调整 -2 → -1 (与买入侧 slope > 0 配套, 形成更对称的趋势过滤)
 const EMA_SLOPE_EXIT_ENABLED = (process.env.EMA_SLOPE_EXIT_ENABLED || 'true') === 'true';
-const EMA_SLOPE_EXIT_PCT     = parseFloat(process.env.EMA_SLOPE_EXIT_PCT || '-2');
+const EMA_SLOPE_EXIT_PCT     = parseFloat(process.env.EMA_SLOPE_EXIT_PCT || '-1');
 
 // ★ 产生买卖信号所需的最小已收盘K线数（低于此数量完全不产生信号，避免 RSI 不收敛误判）
 //   默认 max(SKIP_FIRST_CANDLES, RSI_PERIOD × 3) ≈ 21，这是 Wilder RSI 收敛所需
@@ -381,7 +381,8 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
     //    stepRSI 在K线内波动剧烈时容易算出虚假高值（如95.7），
     //    导致在RSI实际只有40-60的时候误触恐慌卖出
     //    ★ V5-9: K线数不足 MIN_CANDLES_FOR_SIGNAL 时不触发 RSI 卖出（RSI 未收敛会乱跳）
-    if (!belowConvergence && lastClosedRsi > RSI_PANIC) {
+    //    ★ V5-41: lastCandleTs === lastBuyCandle 时跳过 — 同根 K 线买入保护
+    if (!belowConvergence && lastClosedRsi > RSI_PANIC && lastCandleTs !== lastBuyCandle) {
       const lastPanicTs = tokenState._lastPanicSellTs ?? 0;
       if (nowMs - lastPanicTs >= 2000) {
         tokenState._lastPanicSellTs = nowMs;
@@ -394,7 +395,8 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
     // 1.5. ★ V5-40: EMA99 斜率退出 — 趋势加速下行立即出场
     //   只在 K 线数足够算 EMA99 + 斜率时触发, 避免新币数据不足时的伪信号
     //   斜率函数返回 null 时 (lookback 不够), 不触发
-    if (EMA_SLOPE_EXIT_ENABLED && !belowConvergence) {
+    //   ★ V5-41: 同根 K 线买入保护 — 给 V 反一次机会
+    if (EMA_SLOPE_EXIT_ENABLED && !belowConvergence && lastCandleTs !== lastBuyCandle) {
       const slopeExit = calcEMASlope(closes, EMA_PERIOD, EMA_SLOPE_LOOKBACK);
       if (slopeExit && slopeExit.slopePct < EMA_SLOPE_EXIT_PCT) {
         updateState();
@@ -406,7 +408,9 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
 
     // 2. RSI 下穿 70
     //    ★ V5-9: K线数不足 MIN_CANDLES_FOR_SIGNAL 时不触发（RSI 未收敛容易虚假下穿）
-    if (!belowConvergence && prevRsi >= RSI_SELL && rsiRealtime < RSI_SELL && lastCandleTs !== lastSellCandle) {
+    //    ★ V5-41: lastCandleTs === lastBuyCandle 时跳过 — 同根 K 线买入保护
+    if (!belowConvergence && prevRsi >= RSI_SELL && rsiRealtime < RSI_SELL
+        && lastCandleTs !== lastSellCandle && lastCandleTs !== lastBuyCandle) {
       tokenState._lastSellCandle = lastCandleTs;
       updateState();
       return { rsi: rsiRealtime, prevRsi, signal: 'SELL',

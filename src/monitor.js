@@ -559,6 +559,14 @@ class TokenMonitor extends EventEmitter {
     // ── RSI 下穿 70（实时：prevRsi >= 70 且 rsiNow < 70）──
     //    下穿检测只看方向变化，对绝对值精度要求低，stepRSI可信
     if (prevRsi >= _RSI_SELL && rsiNow < _RSI_SELL) {
+      // ★ V5-41: 当根 K 线买入保护 — 刚买入这根 K 线收盘前不允许 RSI 下穿卖出
+      //   用时间戳判断: now 和 buyTime 在同一根 K 线 (差值 < KLINE_SEC) 就跳过
+      const buyTime = state.position?.buyTime;
+      if (buyTime && (now - buyTime) < KLINE_SEC * 1000) {
+        const remainSec = KLINE_SEC - Math.floor((now - buyTime) / 1000);
+        logger.debug('[Monitor] %s WS下穿被同根K线保护跳过 (剩 %ds)', state.symbol, remainSec);
+        return;
+      }
       const lastCrossTs = state._lastRsiCrossSellTs ?? 0;
       if (now - lastCrossTs >= 2000) {
         state._lastRsiCrossSellTs = now;
@@ -885,9 +893,18 @@ class TokenMonitor extends EventEmitter {
             state._slPollPrevRsiTs = Date.now();
 
             if (Number.isFinite(rsiRealtime)) {
+              // ★ V5-41: 当根 K 线买入保护 — 刚买入这根 K 线收盘前不允许 RSI 类卖出触发
+              //   场景: M32 案例 — 08:42 大阴线进行中 BUY (RSI=23.6),
+              //         同根 K 线收盘后 closed RSI 89.7→23.0 触发下穿 SELL,
+              //         同根 K 线买卖, 直接亏损 (滑点 + 小幅反弹被恐慌卖飞)
+              //   保护: 这根 K 线还没结束就出 BUY → SELL, 给 V 反一次机会
+              //   下根 K 线开始 RSI 类卖出恢复, 仍由止损/EMA斜率/RSI判断退出
+              const lastClosedCandleTs = closedCandles[len - 1].openTime;
+              const isSameCandleAsBuy  = state._lastBuyCandle === lastClosedCandleTs;
+
               // ★ V5: RSI > 80 恐慌卖 — 改为用已收盘K线RSI判断，不用stepRSI
               //   stepRSI在K线内波动时容易算出虚假高值
-              if (Number.isFinite(rsiClosedLast) && rsiClosedLast > _RSI_PANIC) {
+              if (!isSameCandleAsBuy && Number.isFinite(rsiClosedLast) && rsiClosedLast > _RSI_PANIC) {
                 const lastPanicTs = state._lastPanicSellTs ?? 0;
                 if (Date.now() - lastPanicTs >= 2000) {
                   state._lastPanicSellTs = Date.now();
@@ -901,7 +918,7 @@ class TokenMonitor extends EventEmitter {
               // RSI 下穿70：支持两种 prev 来源
               //   a) 上次轮询的实时 RSI (prevRsiPoll) — 500ms 间隔的 tick-to-tick 比较
               //   b) 最新已收盘K线 RSI (rsiClosedLast) — K线级别的下穿
-              else if (Number.isFinite(prevRsiPoll) && prevRsiPoll >= _RSI_SELL && rsiRealtime < _RSI_SELL) {
+              else if (!isSameCandleAsBuy && Number.isFinite(prevRsiPoll) && prevRsiPoll >= _RSI_SELL && rsiRealtime < _RSI_SELL) {
                 const lastCrossTs = state._lastRsiCrossSellTs ?? 0;
                 if (Date.now() - lastCrossTs >= 2000) {
                   state._lastRsiCrossSellTs = Date.now();
@@ -913,7 +930,7 @@ class TokenMonitor extends EventEmitter {
                 }
               }
               // 备用：已收盘K线级别下穿（保留原逻辑作为兜底）
-              else if (Number.isFinite(rsiClosedLast)) {
+              else if (!isSameCandleAsBuy && Number.isFinite(rsiClosedLast)) {
                 const rsiPrevClosed = rsiArray[len - 2];
                 if (Number.isFinite(rsiPrevClosed) && rsiPrevClosed >= _RSI_SELL && rsiClosedLast < _RSI_SELL) {
                   const candleTs = closedCandles[len - 1].openTime;
